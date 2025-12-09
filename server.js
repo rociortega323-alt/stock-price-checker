@@ -21,15 +21,10 @@ app.use(bodyParser.urlencoded({ extended: true }));
 // FCC does NOT want CSP from helmet
 // helmet + CSP: permitir solo scripts y styles desde 'self'
 app.use(
-  helmet.contentSecurityPolicy({
-    useDefaults: true,
-    directives: {
-      "script-src": ["'self'"],
-      "style-src": ["'self'"]
-    }
+  helmet({
+    contentSecurityPolicy: false
   })
 );
-
 
 
 // Required so FCC tests detect IP properly
