@@ -18,17 +18,19 @@ app.use(cors());
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-// FCC does NOT want CSP from helmet
-// helmet + CSP: permitir solo scripts y styles desde 'self'
+
+// helmet + CSP: permitir solo scripts, styles e imágenes desde 'self'
 app.use(
   helmet.contentSecurityPolicy({
     directives: {
       defaultSrc: ["'self'"],
       scriptSrc: ["'self'"],
-      styleSrc: ["'self'"]
+      styleSrc: ["'self'"],
+      imgSrc: ["'self'"]
     }
   })
 );
+
 
 // Required so FCC tests detect IP properly
 app.enable('trust proxy');
