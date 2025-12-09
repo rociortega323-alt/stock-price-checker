@@ -1,153 +1,132 @@
-'use strict';
+/*
+*
+*
+*       Complete the API routing below
+*
+*
+*/
 
-const MongoClient = require('mongodb').MongoClient;
-const request = require('request');
-const crypto = require('crypto');
+'use strict';
+app.get('/api/stock-prices'), async (req, res) => {
+  const { stock, like } = req.query;   // ✔ FCC exige query
+
+var expect = require('chai').expect;
+var MongoClient = require('mongodb').MongoClient;
+var request = require('request');
 
 module.exports = function (app) {
 
-  // Helper: anonymize IP by hashing
-  function anonymizeIp(ip) {
-    if (!ip) return null;
-    // crea un hash y toma los primeros 16 chars para espacio menor
-    return crypto.createHash('sha256').update(ip).digest('hex').slice(0, 16);
-  }
+	app.route('/api/stock-prices')
+		.get(function (req, res) {
+			if (req.query.stock === undefined || req.query.stock === '') {
+				return res.json({ error: 'stock is required' });
+			}
 
-  // Helper: fetch price from FCC proxy
-  function fetchPrice(symbol, cb) {
-    // usar el proxy que provee FCC para evitar keys
-    const url = 'https://stock-price-checker-proxy.freecodecamp.rocks/v1/stock?symbol=' + encodeURIComponent(symbol);
-    request(url, { timeout: 5000 }, function (err, resp, body) {
-      if (err) return cb(err);
-      try {
-        const data = JSON.parse(body);
-        // El proxy responde con { symbol: 'GOOG', price: '123.45' } o similar
-        const price = (data && data.price) ? Number.parseFloat(data.price) : 0;
-        cb(null, price);
-      } catch (e) {
-        cb(e);
-      }
-    });
-  }
+			let stock = req.query.stock;
+			let like = (req.query.like !== undefined && req.query.like === 'true' ? true : false);
 
-  app.route('/api/stock-prices')
-    .get(async function (req, res) {
-      try {
-        if (req.query.stock === undefined || req.query.stock === '') {
-          return res.json({ error: 'stock is required' });
-        }
+			if (Array.isArray(stock)) {
+				if (stock.length > 2) {
+					return res.json({ error: 'only 1 or 2 stock is supported' });
+				}
+			} else {
+				stock = [stock];
+			}
 
-        let stocks = req.query.stock;
-        let like = (req.query.like !== undefined && (req.query.like === 'true' || req.query.like === 'on' || req.query.like === '1')) ? true : false;
+			MongoClient.connect(process.env.MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true }, function (err, db) {
+				if (err) {
+					// console.log('Database error: ' + err);
+					return res.json({ error: 'error' });
+				} else {
+					stock[0] = stock[0].toUpperCase();
 
-        if (!Array.isArray(stocks)) {
-          stocks = [stocks];
-        } else {
-          // if array provided, limit to 2 (FCC requirement)
-          if (stocks.length > 2) return res.json({ error: 'only 1 or 2 stock is supported' });
-        }
+					let updateObj = {
+						$setOnInsert: {
+							stock: stock[0]
+							// likes: req['ip'] || []
+						}
+					};
 
-        // normalize uppercase
-        stocks = stocks.map(s => ('' + s).toUpperCase());
+					if (like) {
+						updateObj['$addToSet'] = {
+							likes: req['ip']
+						};
+					}
 
-        // anonymize ip
-        const hashedIp = anonymizeIp(req.ip || req.connection.remoteAddress);
+					db.db().collection('stock').findOneAndUpdate(
+						{
+							stock: stock[0]
+						},
+						updateObj,
+						{ upsert: true, returnDocument: 'after' }, // Insert object if not found, Return the updated document
+						function (error, result) {
+							let likes = (result.value.likes !== undefined ? result.value.likes.length : 0);
 
-        // connect to DB
-        MongoClient.connect(process.env.MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true }, function (err, client) {
-          if (err || !client) {
-            return res.json({ error: 'error' });
-          }
+							request('https://www.alphavantage.co/query?function=global_quote&symbol=' + stock[0].toLowerCase() + '&apikey=' + process.env.STOCK_API_TOKEN, function (error, response, body) {
+								body = JSON.parse(body);
 
-          const db = client.db();
-          const coll = db.collection('stock');
+								if (stock[1] === undefined) {
+									// 1 stock
+									let price = typeof body['Global Quote'] !== 'undefined' && typeof body['Global Quote']['05. price'] !== 'undefined' ? body['Global Quote']['05. price'] : 0;
+									price = Number.parseFloat(price);
 
-          // function to upsert a single stock and get likes count
-          function upsertStock(symbol, cb) {
-            const query = { stock: symbol };
-            const update = { $setOnInsert: { stock: symbol } };
-            if (like && hashedIp) {
-              update['$addToSet'] = { likes: hashedIp };
-            }
-            coll.findOneAndUpdate(query, update, { upsert: true, returnDocument: 'after' }, function (err, result) {
-              if (err) return cb(err);
-              const doc = result && result.value ? result.value : { stock: symbol, likes: [] };
-              const likesCount = Array.isArray(doc.likes) ? doc.likes.length : 0;
-              cb(null, likesCount);
-            });
-          }
+									return res.json({ stockData: { stock: stock[0], price: price, likes: likes } });
+								} else {
+									// 2 stocks
+									let price = typeof body['Global Quote'] !== 'undefined' && typeof body['Global Quote']['05. price'] !== 'undefined' ? body['Global Quote']['05. price'] : 0;
+									price = Number.parseFloat(price);
 
-          if (stocks.length === 1) {
-            // single stock flow
-            const sym = stocks[0];
-            upsertStock(sym, function (err, likesCount) {
-              if (err) {
-                client.close();
-                return res.json({ error: 'error' });
-              }
-              fetchPrice(sym, function (err2, price) {
-                client.close();
-                if (err2) return res.json({ error: 'error fetching price' });
-                return res.json({
-                  stockData: {
-                    stock: sym,
-                    price: price,
-                    likes: likesCount
-                  }
-                });
-              });
-            });
-          } else {
-            // two stocks flow
-            const sym1 = stocks[0];
-            const sym2 = stocks[1];
+									let stock_result = [];
+									stock_result.push({ stock: stock[0], price: price, rel_likes: likes });
 
-            // upsert both in parallel
-            let likes1, likes2, price1, price2;
-            let doneCount = 0;
-            function checkDone() {
-              if (doneCount === 4) {
-                client.close();
-                // compute rel_likes: likes1 - likes2 etc.
-                const rel1 = likes1 - likes2;
-                const rel2 = likes2 - likes1;
-                return res.json({
-                  stockData: [
-                    { stock: sym1, price: price1, rel_likes: rel1 },
-                    { stock: sym2, price: price2, rel_likes: rel2 }
-                  ]
-                });
-              }
-            }
+									stock[1] = stock[1].toUpperCase();
 
-            upsertStock(sym1, function (err, count) {
-              likes1 = err ? 0 : count;
-              doneCount++;
-              checkDone();
-            });
-            upsertStock(sym2, function (err, count) {
-              likes2 = err ? 0 : count;
-              doneCount++;
-              checkDone();
-            });
-            fetchPrice(sym1, function (err, p) {
-              price1 = err ? 0 : p;
-              doneCount++;
-              checkDone();
-            });
-            fetchPrice(sym2, function (err, p) {
-              price2 = err ? 0 : p;
-              doneCount++;
-              checkDone();
-            });
-          }
+									updateObj = {
+										$setOnInsert: {
+											stock: stock[1]
+											// likes: req['ip'] || []
+										}
+									};
 
-        });
+									if (like) {
+										updateObj['$addToSet'] = {
+											likes: req['ip']
+										};
+									}
 
-      } catch (e) {
-        console.error(e);
-        return res.json({ error: 'server error' });
-      }
-    });
+									db.db().collection('stock').findOneAndUpdate(
+										{
+											stock: stock[1]
+										},
+										updateObj,
+										{ upsert: true, returnDocument: 'after' }, // Insert object if not found, Return the updated document
+										function (error, result2) {
+											likes = (result2.value.likes !== undefined ? result2.value.likes.length : 0);
 
-};
+											request('https://www.alphavantage.co/query?function=global_quote&symbol=' + stock[1].toLowerCase() + '&apikey=' + process.env.STOCK_API_TOKEN, function (error, response, body2) {
+												body2 = JSON.parse(body2);
+
+												let price = typeof body2['Global Quote'] !== 'undefined' && typeof body2['Global Quote']['05. price'] !== 'undefined' ? body2['Global Quote']['05. price'] : 0;
+												price = Number.parseFloat(price);
+
+												stock_result.push({ stock: stock[1], price: price, rel_likes: likes });
+
+												let rel_likes1 = stock_result[0]['rel_likes'] - stock_result[1]['rel_likes'];
+												let rel_likes2 = stock_result[1]['rel_likes'] - stock_result[0]['rel_likes'];
+
+												stock_result[0]['rel_likes'] = rel_likes1;
+												stock_result[1]['rel_likes'] = rel_likes2;
+
+												return res.json({ stockData: stock_result });
+											});
+										}
+									);
+								}
+							});
+						}
+					);
+				}
+			});
+		});
+
+}};
