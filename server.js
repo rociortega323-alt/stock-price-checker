@@ -28,10 +28,19 @@ app.use(bodyParser.urlencoded({ extended: true }));
 //   }
 // }));
 
-app.use(helmet({
-	contentSecurityPolicy: false,
-	frameguard: false
-}));
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'"],
+        imgSrc: ["'self'"],
+      },
+    },
+  })
+);
+
 
 // app.enable('trust proxy'); // Not enabled for privacy reasons
 
