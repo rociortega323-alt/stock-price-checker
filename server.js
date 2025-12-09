@@ -45,11 +45,11 @@ app.route('/')
 // FCC testing routes
 fccTestingRoutes(app);
 
+// Alow FClC to access functional test files
+app.use('/_api', express.static(process.cwd() + '/tests'));
+
 // Routing for API
 apiRoutes(app);
-
-// Allow FCC to access functional test files
-app.use('/_api', express.static(process.cwd() + '/tests'));
 
 // 404
 app.use(function (req, res) {
