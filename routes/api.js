@@ -7,126 +7,81 @@
 */
 
 'use strict';
-app.get('/api/stock-prices'), async (req, res) => {
-  const { stock, like } = req.query;   // ✔ FCC exige query
 
-var expect = require('chai').expect;
 var MongoClient = require('mongodb').MongoClient;
 var request = require('request');
 
 module.exports = function (app) {
 
-	app.route('/api/stock-prices')
-		.get(function (req, res) {
-			if (req.query.stock === undefined || req.query.stock === '') {
-				return res.json({ error: 'stock is required' });
-			}
+  app.route('/api/stock-prices')
+    .get(function (req, res) {
 
-			let stock = req.query.stock;
-			let like = (req.query.like !== undefined && req.query.like === 'true' ? true : false);
+      if (!req.query.stock) {
+        return res.json({ error: 'stock is required' });
+      }
 
-			if (Array.isArray(stock)) {
-				if (stock.length > 2) {
-					return res.json({ error: 'only 1 or 2 stock is supported' });
-				}
-			} else {
-				stock = [stock];
-			}
+      let stock = req.query.stock;
+      let like = req.query.like === 'true';
 
-			MongoClient.connect(process.env.MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true }, function (err, db) {
-				if (err) {
-					// console.log('Database error: ' + err);
-					return res.json({ error: 'error' });
-				} else {
-					stock[0] = stock[0].toUpperCase();
+      // Normalize input
+      if (!Array.isArray(stock)) stock = [stock];
+      if (stock.length > 2) return res.json({ error: 'only 1 or 2 stocks supported' });
 
-					let updateObj = {
-						$setOnInsert: {
-							stock: stock[0]
-							// likes: req['ip'] || []
-						}
-					};
+      stock = stock.map(s => s.toUpperCase());
 
-					if (like) {
-						updateObj['$addToSet'] = {
-							likes: req['ip']
-						};
-					}
+      MongoClient.connect(process.env.MONGO_URI, {
+        useNewUrlParser: true,
+        useUnifiedTopology: true
+      }, function (err, db) {
 
-					db.db().collection('stock').findOneAndUpdate(
-						{
-							stock: stock[0]
-						},
-						updateObj,
-						{ upsert: true, returnDocument: 'after' }, // Insert object if not found, Return the updated document
-						function (error, result) {
-							let likes = (result.value.likes !== undefined ? result.value.likes.length : 0);
+        if (err) return res.json({ error: 'database error' });
 
-							request('https://www.alphavantage.co/query?function=global_quote&symbol=' + stock[0].toLowerCase() + '&apikey=' + process.env.STOCK_API_TOKEN, function (error, response, body) {
-								body = JSON.parse(body);
+        const collection = db.db().collection('stock');
 
-								if (stock[1] === undefined) {
-									// 1 stock
-									let price = typeof body['Global Quote'] !== 'undefined' && typeof body['Global Quote']['05. price'] !== 'undefined' ? body['Global Quote']['05. price'] : 0;
-									price = Number.parseFloat(price);
+        const getStockData = (ticker, callback) => {
+          let update = { $setOnInsert: { stock: ticker } };
+          if (like) update.$addToSet = { likes: req.ip };
 
-									return res.json({ stockData: { stock: stock[0], price: price, likes: likes } });
-								} else {
-									// 2 stocks
-									let price = typeof body['Global Quote'] !== 'undefined' && typeof body['Global Quote']['05. price'] !== 'undefined' ? body['Global Quote']['05. price'] : 0;
-									price = Number.parseFloat(price);
+          collection.findOneAndUpdate(
+            { stock: ticker },
+            update,
+            { upsert: true, returnDocument: 'after' },
+            (err, result) => {
 
-									let stock_result = [];
-									stock_result.push({ stock: stock[0], price: price, rel_likes: likes });
+              let likes = (result.value.likes || []).length;
 
-									stock[1] = stock[1].toUpperCase();
+              // NEW PRICE API (FCC proxy)
+              const url = `https://stock-price-checker-proxy.freecodecamp.rocks/v1/stock/${ticker}/quote`;
 
-									updateObj = {
-										$setOnInsert: {
-											stock: stock[1]
-											// likes: req['ip'] || []
-										}
-									};
+              request(url, (err, r, body) => {
+                try {
+                  body = JSON.parse(body);
+                  const price = body.latestPrice || 0;
+                  callback({ stock: ticker, price, likes });
+                } catch {
+                  callback({ stock: ticker, price: 0, likes });
+                }
+              });
+            }
+          );
+        };
 
-									if (like) {
-										updateObj['$addToSet'] = {
-											likes: req['ip']
-										};
-									}
+        if (stock.length === 1) {
+          getStockData(stock[0], data => res.json({ stockData: data }));
+        } else {
+          getStockData(stock[0], data1 => {
+            getStockData(stock[1], data2 => {
+              data1.rel_likes = data1.likes - data2.likes;
+              data2.rel_likes = data2.likes - data1.likes;
 
-									db.db().collection('stock').findOneAndUpdate(
-										{
-											stock: stock[1]
-										},
-										updateObj,
-										{ upsert: true, returnDocument: 'after' }, // Insert object if not found, Return the updated document
-										function (error, result2) {
-											likes = (result2.value.likes !== undefined ? result2.value.likes.length : 0);
+              delete data1.likes;
+              delete data2.likes;
 
-											request('https://www.alphavantage.co/query?function=global_quote&symbol=' + stock[1].toLowerCase() + '&apikey=' + process.env.STOCK_API_TOKEN, function (error, response, body2) {
-												body2 = JSON.parse(body2);
+              res.json({ stockData: [data1, data2] });
+            });
+          });
+        }
 
-												let price = typeof body2['Global Quote'] !== 'undefined' && typeof body2['Global Quote']['05. price'] !== 'undefined' ? body2['Global Quote']['05. price'] : 0;
-												price = Number.parseFloat(price);
-
-												stock_result.push({ stock: stock[1], price: price, rel_likes: likes });
-
-												let rel_likes1 = stock_result[0]['rel_likes'] - stock_result[1]['rel_likes'];
-												let rel_likes2 = stock_result[1]['rel_likes'] - stock_result[0]['rel_likes'];
-
-												stock_result[0]['rel_likes'] = rel_likes1;
-												stock_result[1]['rel_likes'] = rel_likes2;
-
-												return res.json({ stockData: stock_result });
-											});
-										}
-									);
-								}
-							});
-						}
-					);
-				}
-			});
-		});
-
-}};
+      });
+    });
+};
