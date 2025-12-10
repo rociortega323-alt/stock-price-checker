@@ -27,21 +27,39 @@ function anonymizeIp(ip) {
 
 async function fetchStockPrice(ticker) {
   try {
-    const url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${ticker}&apikey=${process.env.ALPHA_KEY}`;
-    const res = await fetch(url);
+    // FCC proxy para evitar CORS
+    const url = `https://stock-price-checker-proxy.freecodecamp.rocks/v1/stock/${ticker}/quote`;
+
+    // Timeout manual
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeout);
+
     const data = await res.json();
 
-    // Alpha Vantage devuelve el precio en 'Global Quote' -> '05. price'
-    const price = data?.['Global Quote']?.['05. price'];
-    return price ? Number(price) : 0;
+    // Si el proxy no devuelve price, intenta Alpha Vantage
+    if (!data || !data.latestPrice) {
+      const alphaUrl = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${ticker}&apikey=${process.env.ALPHA_KEY}`;
+      const alphaRes = await fetch(alphaUrl);
+      const alphaData = await alphaRes.json();
+      const price = alphaData?.['Global Quote']?.['05. price'];
+      if (!price) return 0;
+      return Number(price);
+    }
+
+    return Number(data.latestPrice);
   } catch (_) {
     return 0;
   }
 }
 
 module.exports = function (app) {
+
   app.route('/api/stock-prices')
     .get(async (req, res) => {
+
       if (!req.query.stock) {
         return res.json({ error: 'stock is required' });
       }
@@ -50,13 +68,8 @@ module.exports = function (app) {
       const like = req.query.like === 'true';
       const hashedIp = anonymizeIp(req.ip);
 
-      if (!Array.isArray(stocks)) {
-        stocks = [stocks];
-      }
-
-      if (stocks.length > 2) {
-        return res.json({ error: 'only 1 or 2 stocks supported' });
-      }
+      if (!Array.isArray(stocks)) stocks = [stocks];
+      if (stocks.length > 2) return res.json({ error: 'only 1 or 2 stocks supported' });
 
       stocks = stocks.map(s => ('' + s).toUpperCase());
 
@@ -64,21 +77,24 @@ module.exports = function (app) {
       const collection = db.collection('stocks');
 
       async function getStock(ticker) {
-        const update = { $setOnInsert: { stock: ticker, likes: [] } };
-
-        if (like && hashedIp) {
-          update.$addToSet = { likes: hashedIp };
-        }
-
-        const result = await collection.findOneAndUpdate(
+        // Paso 1: Crear documento si no existe
+        await collection.updateOne(
           { stock: ticker },
-          update,
-          { upsert: true, returnDocument: 'after' }
+          { $setOnInsert: { stock: ticker, likes: [] } },
+          { upsert: true }
         );
 
-        const doc = result.value || { stock: ticker, likes: [] };
-        const likes = Array.isArray(doc.likes) ? doc.likes.length : 0;
+        // Paso 2: Agregar like si corresponde
+        if (like && hashedIp) {
+          await collection.updateOne(
+            { stock: ticker },
+            { $addToSet: { likes: hashedIp } }
+          );
+        }
 
+        // Recuperar el documento actualizado
+        const doc = await collection.findOne({ stock: ticker });
+        const likes = Array.isArray(doc.likes) ? doc.likes.length : 0;
         const price = await fetchStockPrice(ticker);
 
         return {
@@ -88,13 +104,13 @@ module.exports = function (app) {
         };
       }
 
-      // ---------- ONE STOCK ----------
+      // ---------- UN STOCK ----------
       if (stocks.length === 1) {
         const data = await getStock(stocks[0]);
         return res.json({ stockData: data });
       }
 
-      // ---------- TWO STOCKS ----------
+      // ---------- DOS STOCKS ----------
       const s1 = await getStock(stocks[0]);
       const s2 = await getStock(stocks[1]);
 
@@ -107,5 +123,7 @@ module.exports = function (app) {
           { stock: s2.stock, price: s2.price, rel_likes: relLikes2 }
         ]
       });
+
     });
+
 };
