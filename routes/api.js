@@ -66,24 +66,23 @@ module.exports = function (app) {
       const collection = db.collection('stocks');
 
       async function getStock(ticker) {
-        // 1️⃣ Intentar encontrar el documento
+        // Obtener o crear documento
         let doc = await collection.findOne({ stock: ticker });
-
-        // 2️⃣ Si no existe, crearlo
         if (!doc) {
           await collection.insertOne({ stock: ticker, likes: [] });
           doc = await collection.findOne({ stock: ticker });
         }
 
-        // 3️⃣ Agregar like si corresponde y si no existe ya
+        // Actualizar likes si corresponde
         if (like && hashedIp && !doc.likes.includes(hashedIp)) {
           await collection.updateOne(
             { stock: ticker },
             { $push: { likes: hashedIp } }
           );
-          doc.likes.push(hashedIp); // actualizar local
+          doc.likes.push(hashedIp);
         }
 
+        // Obtener precio actual
         const price = await fetchStockPrice(ticker);
 
         return {
@@ -93,26 +92,22 @@ module.exports = function (app) {
         };
       }
 
-      // ---------- UN SOLO STOCK ----------
-      if (stocks.length === 1) {
-        const data = await getStock(stocks[0]);
-        return res.json({ stockData: data });
+      // ---------- PROCESAR TODOS LOS STOCKS EN PARALELO ----------
+      const stockDocs = await Promise.all(stocks.map(t => getStock(t)));
+
+      if (stockDocs.length === 1) {
+        return res.json({ stockData: stockDocs[0] });
+      } else {
+        const relLikes1 = stockDocs[0].likes - stockDocs[1].likes;
+        const relLikes2 = stockDocs[1].likes - stockDocs[0].likes;
+
+        return res.json({
+          stockData: [
+            { stock: stockDocs[0].stock, price: stockDocs[0].price, rel_likes: relLikes1 },
+            { stock: stockDocs[1].stock, price: stockDocs[1].price, rel_likes: relLikes2 }
+          ]
+        });
       }
-
-      // ---------- DOS STOCKS ----------
-      const s1 = await getStock(stocks[0]);
-      const s2 = await getStock(stocks[1]);
-
-      const relLikes1 = s1.likes - s2.likes;
-      const relLikes2 = s2.likes - s1.likes;
-
-      return res.json({
-        stockData: [
-          { stock: s1.stock, price: s1.price, rel_likes: relLikes1 },
-          { stock: s2.stock, price: s2.price, rel_likes: relLikes2 }
-        ]
-      });
-
     });
 
 };
