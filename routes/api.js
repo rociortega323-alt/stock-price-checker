@@ -6,12 +6,15 @@ const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...ar
 
 // ---------- GLOBAL DATABASE CONNECTION ----------
 let db = null;
+
 async function getDb() {
   if (db) return db;
+
   const client = await MongoClient.connect(process.env.MONGO_URI, {
     useNewUrlParser: true,
     useUnifiedTopology: true
   });
+
   db = client.db();
   return db;
 }
@@ -22,16 +25,16 @@ function anonymizeIp(ip) {
   return crypto.createHash('sha256').update(ip).digest('hex').slice(0, 16);
 }
 
-// Fetch price using Alpha Vantage
 async function fetchStockPrice(ticker) {
   try {
-    const urlAlpha = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${ticker}&apikey=${process.env.ALPHA_KEY}`;
-    const res = await fetch(urlAlpha);
+    const url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${ticker}&apikey=${process.env.ALPHA_KEY}`;
+    const res = await fetch(url);
     const data = await res.json();
-    const price = data['Global Quote']?.['05. price'];
-    return Number(price) || 0;
-  } catch (err) {
-    console.error('Error fetching stock price:', err);
+
+    // Alpha Vantage devuelve el precio en 'Global Quote' -> '05. price'
+    const price = data?.['Global Quote']?.['05. price'];
+    return price ? Number(price) : 0;
+  } catch (_) {
     return 0;
   }
 }
@@ -39,41 +42,50 @@ async function fetchStockPrice(ticker) {
 module.exports = function (app) {
   app.route('/api/stock-prices')
     .get(async (req, res) => {
-      if (!req.query.stock) return res.json({ error: 'stock is required' });
+      if (!req.query.stock) {
+        return res.json({ error: 'stock is required' });
+      }
 
       let stocks = req.query.stock;
       const like = req.query.like === 'true';
       const hashedIp = anonymizeIp(req.ip);
 
-      if (!Array.isArray(stocks)) stocks = [stocks];
-      if (stocks.length > 2) return res.json({ error: 'only 1 or 2 stocks supported' });
+      if (!Array.isArray(stocks)) {
+        stocks = [stocks];
+      }
+
+      if (stocks.length > 2) {
+        return res.json({ error: 'only 1 or 2 stocks supported' });
+      }
 
       stocks = stocks.map(s => ('' + s).toUpperCase());
+
       const db = await getDb();
       const collection = db.collection('stocks');
 
-      // Get or create stock document
       async function getStock(ticker) {
-        const existingDoc = await collection.findOne({ stock: ticker });
+        const update = { $setOnInsert: { stock: ticker, likes: [] } };
 
-        if (existingDoc) {
-          if (like && hashedIp) {
-            await collection.updateOne(
-              { stock: ticker },
-              { $addToSet: { likes: hashedIp } }
-            );
-            existingDoc.likes.push(hashedIp);
-          }
-          const likes = Array.isArray(existingDoc.likes) ? existingDoc.likes.length : 0;
-          const price = await fetchStockPrice(ticker);
-          return { stock: ticker, price, likes };
-        } else {
-          const newDoc = { stock: ticker, likes: like && hashedIp ? [hashedIp] : [] };
-          await collection.insertOne(newDoc);
-          const likes = newDoc.likes.length;
-          const price = await fetchStockPrice(ticker);
-          return { stock: ticker, price, likes };
+        if (like && hashedIp) {
+          update.$addToSet = { likes: hashedIp };
         }
+
+        const result = await collection.findOneAndUpdate(
+          { stock: ticker },
+          update,
+          { upsert: true, returnDocument: 'after' }
+        );
+
+        const doc = result.value || { stock: ticker, likes: [] };
+        const likes = Array.isArray(doc.likes) ? doc.likes.length : 0;
+
+        const price = await fetchStockPrice(ticker);
+
+        return {
+          stock: ticker,
+          price,
+          likes
+        };
       }
 
       // ---------- ONE STOCK ----------
