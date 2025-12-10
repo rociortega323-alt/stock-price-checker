@@ -27,13 +27,17 @@ function anonymizeIp(ip) {
 
 async function fetchStockPrice(ticker) {
   try {
-    const url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${ticker}&apikey=${process.env.ALPHA_KEY}`;
-    const res = await fetch(url);
-    const data = await res.json();
+    // Intento con proxy FreeCodeCamp
+    const urlProxy = `https://stock-price-checker-proxy.freecodecamp.rocks/v1/stock/${ticker}/quote`;
+    const resProxy = await fetch(urlProxy);
+    const dataProxy = await resProxy.json();
+    if (dataProxy && dataProxy.latestPrice) return Number(dataProxy.latestPrice);
 
-    if (!data || !data["Global Quote"] || !data["Global Quote"]["05. price"]) return 0;
-
-    return Number(data["Global Quote"]["05. price"]);
+    // Alternativa Alpha Vantage
+    const urlAlpha = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${ticker}&apikey=${process.env.ALPHA_KEY}`;
+    const resAlpha = await fetch(urlAlpha);
+    const dataAlpha = await resAlpha.json();
+    return Number(dataAlpha['Global Quote']['05. price']) || 0;
   } catch (_) {
     return 0;
   }
@@ -67,7 +71,6 @@ module.exports = function (app) {
 
       async function getStock(ticker) {
         const update = { $setOnInsert: { stock: ticker, likes: [] } };
-
         if (like && hashedIp) {
           update.$addToSet = { likes: hashedIp };
         }
@@ -85,7 +88,7 @@ module.exports = function (app) {
 
         return {
           stock: ticker,
-          price: price,
+          price,
           likes
         };
       }
